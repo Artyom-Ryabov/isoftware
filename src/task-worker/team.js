@@ -1,5 +1,5 @@
 const { dispatch, spawn, Ref } = require('nact');
-const system = require('./system');
+const system = require('../system');
 const { spawnWorker, workerMsg } = require('./worker');
 
 /**

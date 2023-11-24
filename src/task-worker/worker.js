@@ -24,12 +24,13 @@ const spawnWorker = (parent, id) =>
         /**
          * @param {WorkerState} [state={}]
          * @param {WorkerMsg} msg
+         * @param {import('nact').ActorContext<WorkerMsg, Ref<any>} ctx 
          * @returns {WorkerState}
          */
         (state = {}, msg, ctx) => {
             if (msg.name === workerMsg.INIT) {
                 console.log('init:', ctx.name, ', with values:', msg.value);
-                dispatch(parent, {name: 'CREATE_TASK', value: ctx.self})
+                dispatch(msg.sender, {name: 'CREATE_TASK', value: ctx.self})
                 return { ...state, capacity: msg.value };
             }
             return state;
