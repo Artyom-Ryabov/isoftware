@@ -1,49 +1,62 @@
+// @ts-check
 const { dispatch, stop } = require('nact');
 const system = require('./src/system');
-const { companyMsg } = require('./src/order-curier/msg');
-const { setLocation, getDistance } = require('./src/order-curier/location');
-const spawnCompany = require('./src/order-curier/company');
+const { COURIERS, ORDERS, COURIER_COST, create_order } = require('./src/samples');
+const { CompanyMsg } = require('./src/msg');
+const spawn_company = require('./src/company');
+const { set_location } = require('./src/location');
 
-const getInt = (min, max) => Math.floor(Math.random() * max + min);
-const lenCost = 150;
-const company = spawnCompany(system, 0, { couriers: [], orders: [] });
-const names = ['Андрей', 'Виталий', 'Сергей', 'Елена'];
-for (let i = 0; i < names.length; i++) {
-    dispatch(company, {
-        name: companyMsg.CREATE_COURIER,
-        value: {
-            id: i,
-            initState: {
-                name: names[i],
-                location: setLocation(getInt(1, 20), getInt(1, 20)),
-                capacity: getInt(2, 4),
-                speed: getInt(2, 4),
-                price: lenCost * 0.25,
-                schedule: []
-            }
-        }
-    });
-}
-for (let i = 0; i < 20; i++) {
-    const from = setLocation(getInt(1, 20), getInt(1, 20));
-    const to = setLocation(getInt(1, 20), getInt(1, 20));
-    dispatch(company, {
-        name: companyMsg.CREATE_ORDER,
-        value: {
-            id: i,
-            initState: {
-                from,
-                to,
-                weight: getInt(1, 4),
-                price: getDistance(from, to) * lenCost,
-                plan: null,
-                couriers: [],
-                couriersPlans: []
-            }
-        }
-    });
-}
+const company = spawn_company(system, 0);
+COURIERS.forEach((c, i) =>
+    dispatch(company, { name: CompanyMsg.CREATE_COURIER, value: { id: i, init_state: c } })
+);
+ORDERS.forEach((o, i) =>
+    dispatch(company, { name: CompanyMsg.CREATE_ORDER, value: { id: i, init_state: o } })
+);
 
-dispatch(company, { name: companyMsg.CREATE_PLAN });
+setTimeout(() => dispatch(company, { name: CompanyMsg.LOG, value: null }), 100);
+
+setTimeout(
+    () =>
+        dispatch(company, {
+            name: CompanyMsg.CREATE_COURIER,
+            value: {
+                id: COURIERS.length,
+                init_state: {
+                    name: 'Иван',
+                    location: set_location(9, 9),
+                    capacity: 5,
+                    speed: 2,
+                    cost: COURIER_COST,
+                    schedule: []
+                }
+            }
+        }),
+    150
+);
+
+setTimeout(() => dispatch(company, { name: CompanyMsg.LOG, value: null }), 500);
+
+setTimeout(
+    () => (
+        dispatch(company, {
+            name: CompanyMsg.CREATE_ORDER,
+            value: {
+                id: ORDERS.length,
+                init_state: create_order(set_location(1, 2), set_location(2, 2), 2, 151)
+            }
+        }),
+        dispatch(company, {
+            name: CompanyMsg.CREATE_ORDER,
+            value: {
+                id: ORDERS.length + 1,
+                init_state: create_order(set_location(9, 9), set_location(10, 10), 4, 151)
+            }
+        })
+    ),
+    1000
+);
+
+setTimeout(() => dispatch(company, { name: CompanyMsg.LOG, value: null }), 2000);
 
 setTimeout(() => stop(system), 5000);

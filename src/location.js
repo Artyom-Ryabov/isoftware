@@ -1,8 +1,9 @@
+// @ts-check
 /**
  * @typedef {Object} Location
  * @prop {number} x
  * @prop {number} y
- * @prop {() => string} getString
+ * @prop {string} coords
  */
 
 /**
@@ -10,20 +11,20 @@
  * @param {number} y
  * @returns {Location}
  */
-const setLocation = (x, y) => ({
+const set_location = (x, y) => ({
     x,
     y,
-    getString: () => `${x},${y}`
+    coords: `${x},${y}`
 });
 
 /**
  * @param {Location} from
  * @param {Location} to
  */
-const getDistance = (from, to) =>
+const get_distance = (from, to) =>
     Math.pow(Math.pow(to.x - from.x, 2) + Math.pow(to.y - from.y, 2), 0.5);
 
 module.exports = {
-    setLocation,
-    getDistance
+    set_location,
+    get_distance
 };
