@@ -3,7 +3,6 @@
  * @typedef {Object} Location
  * @prop {number} x
  * @prop {number} y
- * @prop {string} coords
  */
 
 /**
@@ -11,11 +10,7 @@
  * @param {number} y
  * @returns {Location}
  */
-const set_location = (x, y) => ({
-    x,
-    y,
-    coords: `${x},${y}`
-});
+const set_location = (x, y) => ({ x, y });
 
 /**
  * @param {Location} from

@@ -2,39 +2,32 @@
 const { spawn, dispatch, Ref } = require('nact');
 const { get_distance, set_location } = require('./location');
 const { CompanyMsg, CourierMsg, OrderMsg } = require('./msg');
-const deep_copy = require('./utlis');
+const { deep_copy } = require('./utlis');
 
 /**
- * @template T
- * @typedef {import('./msg').Msg<T>} Msg
+ * @typedef {import('./location').Location} Location
  */
 
 /**
- * @typedef {Object} Plan
- * @prop {Ref<Msg<any>>} courier
- * @prop {string} courier_name
- * @prop {number} total
- * @prop {number} slot
+ * @typedef {import('./msg').Msg} Msg
+ * @typedef {import('./msg').CourierPlan} CourierPlan
+ * @typedef {import('./msg').OrderPlan} OrderPlan
  */
 
 /**
- * @typedef {Object} SchedulePlan
- * @prop {Ref<Msg<any>>} courier
- * @prop {string} courier_name
- * @prop {number} total
- * @prop {number} slot
- * @prop {import('./courier').Plan[]} schedule
+ * @typedef {import('nact').ActorContext<Msg, Ref<Msg>>} ActorContext
  */
 
 /**
  * @typedef {Object} OrderState
- * @prop {import('./location').Location} from
- * @prop {import('./location').Location} to
+ * @prop {Location} from
+ * @prop {Location} to
  * @prop {number} weight
  * @prop {number} price
- * @prop {Plan|null} plan
+ * @prop {OrderPlan|null} order_plan
  * @prop {number} num_couriers
- * @prop {(Plan|SchedulePlan|null)[]} plans
+ * @prop {OrderPlan[]} order_plans
+ * @prop {boolean} lock
  */
 
 /** @type {OrderState} */
@@ -43,161 +36,175 @@ const INIT_STATE = {
     to: set_location(0, 0),
     weight: 0,
     price: 0,
-    plan: null,
+    order_plan: null,
     num_couriers: 0,
-    plans: []
+    order_plans: [],
+    lock: false
 };
 
 /**
- * @param {Ref<Msg<any>>} parent
+ * @param {Ref<Msg>} parent
  * @param {number} id
  * @param {OrderState} init
- * @returns {Ref<Msg<any>>}
+ * @returns {Ref<Msg>}
  */
 function spawn_order(parent, id, init = INIT_STATE) {
     /**
      * @param {OrderState} state
-     * @param {Msg<any>} msg
-     * @param {import('nact').ActorContext<Msg<any>, Ref<Msg<any>>>} ctx
+     * @param {Msg} msg
+     * @param {ActorContext} ctx
      * @returns {OrderState}
      */
     function receiver(state = init, msg, ctx) {
         switch (msg.name) {
             case OrderMsg.RECEIVE_COURIER_PLAN: {
-                const _state = deep_copy(state);
-                _state.plans.push(msg.value);
-                if (_state.plans.length === _state.num_couriers) {
-                    dispatch(ctx.self, { name: OrderMsg.PLAN_ORDER, value: null });
+                const st = deep_copy(state);
+                st.order_plans.push({ courier_ref: msg.sender, courier: msg.value });
+                if (st.order_plans.length === st.num_couriers) {
+                    dispatch(ctx.self, {
+                        name: OrderMsg.PLAN_ORDER,
+                        value: null,
+                        sender: ctx.self
+                    });
                 }
-                return _state;
+                return st;
             }
             case OrderMsg.RECEIVE_COURIER_REPLACE_PLAN: {
-                const _state = deep_copy(state);
-                _state.plans.push(msg.value);
-                if (_state.plans.length === _state.num_couriers) {
-                    dispatch(ctx.self, { name: OrderMsg.PLAN_REPLACING_ORDER, value: null });
+                const st = deep_copy(state);
+                st.order_plans.push({ courier_ref: msg.sender, courier: msg.value });
+                if (st.order_plans.length === st.num_couriers) {
+                    dispatch(ctx.self, {
+                        name: OrderMsg.PLAN_REPLACING_ORDER,
+                        value: null,
+                        sender: ctx.self
+                    });
                 }
-                return _state;
+                return st;
             }
             case OrderMsg.FIND_COURIERS: {
-                if (state.plan != null) {
+                if (state.lock || state.order_plan != null) {
                     break;
                 }
-                const _state = deep_copy(state);
-                _state.num_couriers = msg.value.length;
-                _state.plans = [];
+                const st = deep_copy(state);
+                st.num_couriers = msg.value.length;
+                st.order_plans = [];
+                st.lock = true;
                 msg.value.forEach(c =>
                     dispatch(c, {
                         name: CourierMsg.CAN_PLAN,
                         value: {
                             id: ctx.name,
-                            weight: _state.weight,
-                            price: _state.price,
-                            from: _state.from,
-                            to: _state.to
+                            weight: st.weight,
+                            price: st.price,
+                            from: st.from,
+                            to: st.to
                         },
                         sender: ctx.self
                     })
                 );
-                return _state;
+                return st;
             }
             case OrderMsg.FIND_COURIERS_TO_REPLACE: {
-                const _state = deep_copy(state);
-                const num_couriers = msg.value.length;
-                const plans = [];
+                if (state.lock || state.order_plan != null) {
+                    break;
+                }
+                const st = deep_copy(state);
+                st.num_couriers = msg.value.length;
+                st.order_plans = [];
+                st.lock = true;
                 msg.value.forEach(c =>
                     dispatch(c, {
                         name: CourierMsg.CAN_REPLACE,
                         value: {
                             id: ctx.name,
-                            weight: _state.weight,
-                            price: _state.price,
-                            from: _state.from,
-                            to: _state.to
+                            weight: st.weight,
+                            price: st.price,
+                            from: st.from,
+                            to: st.to
                         },
                         sender: ctx.self
                     })
                 );
-                return { ..._state, num_couriers, plans };
+                return st;
             }
             case OrderMsg.PLAN_ORDER: {
-                const _state = deep_copy(state);
-                const plans = /** @type {Plan[]} */ (_state.plans.filter(Boolean));
-                const plan = plans.sort((a, b) => a.total - b.total).at(-1);
-                if (plan != null && plan.total > 0) {
-                    dispatch(plan.courier, {
+                const st = deep_copy(state);
+                const order_plans = /** @type {OrderPlan[]} */ (
+                    st.order_plans.filter(p => p.courier != null)
+                );
+                const plan = order_plans.sort((a, b) => a.courier.total - b.courier.total).at(-1);
+                if (plan != null) {
+                    dispatch(plan.courier_ref, {
                         name: CourierMsg.ACCEPT_PLAN,
                         value: {
-                            order: ctx.self,
-                            order_id: ctx.name,
-                            total: plan.total,
-                            from: _state.from,
-                            to: _state.to,
-                            slot: plan.slot,
-                            price: _state.price
-                        }
+                            schedule: plan.courier.schedule,
+                            total: plan.courier.total
+                        },
+                        sender: ctx.self
                     });
-                    return { ..._state, plan };
+                } else {
+                    dispatch(parent, {
+                        name: CompanyMsg.ADJUST_SCHEDULE,
+                        value: null,
+                        sender: ctx.self
+                    });
                 }
-                dispatch(parent, {
-                    name: CompanyMsg.ADJUST_SCHEDULE,
-                    value: null,
-                    sender: ctx.self
-                });
-                break;
+                st.order_plan = plan ?? null;
+                st.order_plans = [];
+                st.lock = false;
+                return st;
             }
             case OrderMsg.PLAN_REPLACING_ORDER: {
-                const _state = deep_copy(state);
-                const plans = /** @type {SchedulePlan[]} */ (_state.plans.filter(Boolean));
-                const plan = plans
-                    .sort(
-                        (a, b) =>
-                            a.schedule.reduce((acc, plan) => acc + plan.total, 0) -
-                            b.schedule.reduce((acc, plan) => acc + plan.total, 0)
-                    )
-                    .at(-1);
-                if (plan != null && plan.total > 0) {
-                    dispatch(plan.courier, {
+                const st = deep_copy(state);
+                const order_plans = /** @type {OrderPlan[]} */ (
+                    st.order_plans.filter(p => p.courier != null)
+                );
+                const plan = order_plans.sort((a, b) => a.courier.total - b.courier.total).at(-1);
+                if (plan != null) {
+                    dispatch(plan.courier_ref, {
                         name: CourierMsg.ACCEPT_REPLACE_PLAN,
-                        value: plan.schedule
+                        value: {
+                            schedule: plan.courier.schedule,
+                            total: plan.courier.total
+                        },
+                        sender: ctx.self
                     });
-                    _state.plan = {
-                        courier: plan.courier,
-                        total: plan.total,
-                        courier_name: plan.courier_name,
-                        slot: plan.slot
-                    };
-                    return _state;
+                } else {
+                    dispatch(parent, {
+                        name: CompanyMsg.NOT_PLANNED_ORDER,
+                        value: { id: ctx.name },
+                        sender: ctx.self
+                    });
                 }
-                dispatch(parent, {
-                    name: CompanyMsg.NOT_PLANNED_ORDER,
-                    value: { id: ctx.name },
-                    sender: ctx.self
-                });
-                break;
+                st.order_plan = plan ?? null;
+                st.order_plans = [];
+                st.lock = false;
+                return st;
             }
-            case OrderMsg.UPDATE_PLAN: {
-                const _state = deep_copy(state);
-                if (_state.plan == null) {
-                    break;
-                }
-                _state.plan.total = msg.value;
-                return _state;
-            }
+            // case OrderMsg.UPDATE_PLAN: {
+            //     const _state = deep_copy(state);
+            //     if (_state.plan == null) {
+            //         break;
+            //     }
+            //     _state.plan.total = msg.value;
+            //     return _state;
+            // }
             case OrderMsg.DISCARD: {
-                const _state = deep_copy(state);
-                dispatch(parent, { name: CompanyMsg.CREATE_PLAN, value: null });
-                _state.plan = null;
-                return _state;
+                const st = deep_copy(state);
+                dispatch(parent, { name: CompanyMsg.CREATE_PLAN, value: null, sender: ctx.self });
+                st.order_plan = null;
+                st.order_plans = [];
+                st.lock = false;
+                return st;
             }
             case OrderMsg.LOG: {
                 console.log(
-                    `Заказ (${ctx.name}) ${state.from.coords} -> (${get_distance(
+                    `Заказ (${ctx.name}) ${state.from.x},${state.from.y} -> (${get_distance(
                         state.from,
                         state.to
                     ).toFixed(2)} км / ${state.weight} кг) | Цена: ${state.price.toFixed(2)} | ${
-                        state.plan != null
-                            ? `Запланирован на курьера - ${state.plan.courier_name}`
+                        state.order_plan != null
+                            ? `Запланирован на курьера - ${state.order_plan.courier.name}`
                             : 'Не запланирован'
                     }`
                 );

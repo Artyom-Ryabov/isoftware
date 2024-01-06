@@ -1,180 +1,249 @@
 // @ts-check
 const { spawn, dispatch, Ref } = require('nact');
-const { get_distance, set_location } = require('./location');
+const { set_location } = require('./location');
 const { CompanyMsg, CourierMsg, OrderMsg } = require('./msg');
-const deep_copy = require('./utlis');
+const { deep_copy, find_combinations, calc_price, calc_total } = require('./utlis');
 
 /**
- * @template T
- * @typedef {import('./msg').Msg<T>} Msg
+ * @typedef {import('./location').Location} Location
  */
 
 /**
- * @typedef {Object} Plan
- * @prop {Ref<Msg<any>>} order
- * @prop {string} order_id
- * @prop {number} price
- * @prop {number} total
- * @prop {import('./location').Location} from
- * @prop {import('./location').Location} to
- * @prop {number} slot
+ * @typedef {import('./msg').Msg} Msg
+ * @typedef {import('./msg').MsgOrder} MsgOrder
+ * @typedef {import('./msg').Order} Order
+ * @typedef {import('./msg').CourierPlan} CourierPlan
+ * @typedef {import('./msg').TotalPlan} TotalPlan
+ */
+
+/**
+ * @typedef {import('nact').ActorContext<Msg, Ref<Msg>>} ActorContext
  */
 
 /**
  * @typedef {Object} CourierState
  * @prop {string} name
- * @prop {import('./location').Location} location
- * @prop {number} capacity
- * @prop {number} speed
+ * @prop {Location} location
+ * @prop {number} lift
+ * @prop {number} workload
  * @prop {number} cost
- * @prop {Plan[]} schedule
+ * @prop {number} total
+ * @prop {CourierPlan[]} schedule
+ * @prop {Ref<Msg>|null} prev_order_ref
  */
 
 /** @type {CourierState} */
 const INIT_STATE = {
     name: '',
     location: set_location(0, 0),
-    capacity: 0,
-    speed: 0,
+    lift: 0,
+    workload: 0,
     cost: 0,
-    schedule: []
+    total: 0,
+    schedule: [],
+    prev_order_ref: null
 };
 
 /**
- * @param {import('./location').Location} last_location
- * @param {*} plan
- * @param {number} cost
+ * @typedef {Object} TheoreticalPlan
+ * @prop {Ref<Msg>} order_ref
+ * @prop {Order} order
  */
-function calc_price(last_location, plan, cost) {
-    const distance = get_distance(last_location, plan.from) + get_distance(plan.from, plan.to);
-    return plan.price - distance * cost;
+
+/**
+ * @param {CourierPlan[]} old_schedule
+ * @param {TheoreticalPlan} plan
+ * @param {Location} location
+ * @param {number} cost
+ * @returns {[CourierPlan[]|null, number]}
+ */
+function calc_schedule(old_schedule, plan, location, cost) {
+    /** @type {TheoreticalPlan[]} */
+    const plans = old_schedule.map(p => ({
+        order_ref: p.order_ref,
+        order: p.order
+    }));
+    plans.push(plan);
+    const variants = find_combinations(plans);
+    /** @type {CourierPlan[]|null} */
+    let new_schedule = null;
+    let highest = 0;
+    for (const variant of variants) {
+        /** @type {CourierPlan[]} */
+        const schedule = variant.map((v, idx) => ({
+            ...v,
+            income: calc_price(idx === 0 ? location : variant[idx - 1].order.to, v.order, cost)
+        }));
+        const total = calc_total(location, schedule, cost);
+        if (total > highest) {
+            highest = total;
+            new_schedule = schedule;
+        }
+    }
+    return [new_schedule, highest];
 }
 
 /**
- * @param {Ref<Msg<any>>} parent
+ * @param {Ref<Msg>} parent
  * @param {number} id
  * @param {CourierState} init
- * @returns {Ref<any>}
+ * @returns {Ref<Msg>}
  */
 function spawn_courier(parent, id, init = INIT_STATE) {
     /**
      * @param {CourierState} state
-     * @param {Msg<any>} msg
-     * @param {import('nact').ActorContext<Msg<any>, Ref<any>>} ctx
+     * @param {Msg} msg
+     * @param {ActorContext} ctx
      * @returns {CourierState}
      */
     function receiver(state = init, msg, ctx) {
         switch (msg.name) {
             case CourierMsg.CAN_PLAN: {
-                if (msg.sender == null) {
-                    console.error("Нужно предоставить адрес отправителя сообщения 'Курьер'");
+                const msg_value = /** @type {Order} */ (msg.value);
+                if (msg_value.weight > state.lift || state.workload === state.schedule.length) {
+                    dispatch(msg.sender, {
+                        name: OrderMsg.RECEIVE_COURIER_PLAN,
+                        value: null,
+                        sender: ctx.self
+                    });
                     break;
                 }
-                const _state = deep_copy(state);
-                if (msg.value.weight > _state.capacity) {
-                    dispatch(msg.sender, { name: OrderMsg.RECEIVE_COURIER_PLAN, value: null });
+                const st = deep_copy(state);
+                const [schedule, total] = calc_schedule(
+                    st.schedule,
+                    { order_ref: msg.sender, order: msg_value },
+                    st.location,
+                    st.cost
+                );
+                if (schedule == null) {
+                    dispatch(msg.sender, {
+                        name: OrderMsg.RECEIVE_COURIER_PLAN,
+                        value: null,
+                        sender: ctx.self
+                    });
                     break;
                 }
-
-                const last_location = _state.schedule.at(-1)?.to ?? _state.location;
-                const plan = {
-                    courier: ctx.self,
-                    courier_name: _state.name,
-                    total: calc_price(last_location, msg.value, _state.cost),
-                    slot: _state.schedule.length
-                };
                 dispatch(msg.sender, {
                     name: OrderMsg.RECEIVE_COURIER_PLAN,
-                    value: plan
+                    value: {
+                        name: st.name,
+                        schedule,
+                        total
+                    },
+                    sender: ctx.self
                 });
                 break;
             }
             case CourierMsg.CAN_REPLACE: {
-                const _state = deep_copy(state);
-                if (msg.sender == null || _state.schedule.length === 0) {
-                    console.log(`Курьер (${_state.name}) не может перераспределить заказы`);
+                const msg_value = /** @type {Order} */ (msg.value);
+                if (msg_value.weight > state.lift) {
+                    dispatch(msg.sender, {
+                        name: OrderMsg.RECEIVE_COURIER_REPLACE_PLAN,
+                        value: null,
+                        sender: ctx.self
+                    });
                     break;
                 }
-                if (msg.value.weight > _state.capacity) {
-                    dispatch(msg.sender, { name: OrderMsg.RECEIVE_COURIER_PLAN, value: null });
-                    break;
-                }
-                const schedule = deep_copy(_state.schedule);
-                schedule.sort((a, b) => a.total - b.total);
-                const income = _state.schedule.reduce((acc, plan) => acc + plan.total, 0);
-                const replacing_order_id = schedule[0].order_id;
-                const replacing_index = _state.schedule.findIndex(
-                    p => p.order_id === replacing_order_id
-                );
-                const last_location =
-                    replacing_index === 0
-                        ? _state.location
-                        : _state.schedule[replacing_index - 1].to;
-                const total = calc_price(last_location, msg.value, _state.cost);
-                _state.schedule[replacing_index] = {
-                    order: msg.sender,
-                    order_id: msg.value.id,
-                    total,
-                    from: msg.value.from,
-                    to: msg.value.to,
-                    slot: replacing_index,
-                    price: msg.value.price
-                };
-                if (_state.schedule.length > 1 && replacing_index + 1 < _state.schedule.length) {
-                    _state.schedule[replacing_index + 1].total = calc_price(
-                        msg.value.to,
-                        _state.schedule[replacing_index + 1],
-                        _state.cost
+                const st = deep_copy(state);
+                const variants = [];
+                for (let i = 0; i < st.schedule.length; i++) {
+                    const sch = deep_copy(st.schedule);
+                    sch.splice(i, 1);
+                    const [schedule, total] = calc_schedule(
+                        sch,
+                        { order_ref: msg.sender, order: msg_value },
+                        st.location,
+                        st.cost
                     );
+                    if (schedule != null) {
+                        variants.push({ index: i, schedule, total });
+                    }
                 }
-                const value =
-                    income < _state.schedule.reduce((acc, plan) => acc + plan.total, 0)
-                        ? {
-                              courier: ctx.self,
-                              courier_name: _state.name,
-                              total,
-                              slot: replacing_index,
-                              schedule: _state.schedule
-                          }
-                        : null;
+                const best = variants.sort((a, b) => a.total - b.total).at(-1);
+                if (best == null) {
+                    dispatch(msg.sender, {
+                        name: OrderMsg.RECEIVE_COURIER_REPLACE_PLAN,
+                        value: null,
+                        sender: ctx.self
+                    });
+                    break;
+                }
                 dispatch(msg.sender, {
                     name: OrderMsg.RECEIVE_COURIER_REPLACE_PLAN,
-                    value
+                    value: {
+                        name: st.name,
+                        schedule: best.schedule,
+                        total: best.total
+                    },
+                    sender: ctx.self
                 });
-                break;
+                st.prev_order_ref = st.schedule[best.index].order_ref;
+                return st;
             }
             case CourierMsg.ACCEPT_PLAN: {
-                const _state = deep_copy(state);
-                if (_state.schedule.length !== msg.value.slot) {
-                    dispatch(msg.value.order, {
+                const msg_value = /** @type {TotalPlan} */ (msg.value);
+                const st = deep_copy(state);
+                if (
+                    msg_value.total <= st.total ||
+                    msg_value.schedule.length <= st.schedule.length
+                ) {
+                    dispatch(msg.sender, {
                         name: OrderMsg.DISCARD,
-                        value: null
+                        value: null,
+                        sender: ctx.self
                     });
                     break;
                 }
                 dispatch(parent, {
                     name: CompanyMsg.RECEIVE_PLAN,
-                    value: { ...msg.value, name: _state.name }
+                    value: { name: st.name, schedule: msg_value.schedule, total: msg_value.total },
+                    sender: ctx.self
                 });
-                _state.schedule.push(msg.value);
-                return _state;
+                st.total = msg_value.total;
+                st.schedule = msg_value.schedule;
+                st.prev_order_ref = msg.sender;
+                return st;
             }
             case CourierMsg.ACCEPT_REPLACE_PLAN: {
-                const _state = deep_copy(state);
-                dispatch(_state.schedule[0].order, { name: OrderMsg.DISCARD, value: null });
-                _state.schedule = msg.value;
-                return _state;
+                const msg_value = /** @type {TotalPlan} */ (msg.value);
+                const st = deep_copy(state);
+                if (msg_value.total <= st.total) {
+                    dispatch(msg.sender, {
+                        name: OrderMsg.DISCARD,
+                        value: null,
+                        sender: ctx.self
+                    });
+                    break;
+                }
+                if (st.prev_order_ref != null) {
+                    dispatch(st.prev_order_ref, {
+                        name: OrderMsg.DISCARD,
+                        value: null,
+                        sender: ctx.self
+                    });
+                    st.prev_order_ref = msg.sender;
+                }
+                st.total = msg_value.total;
+                st.schedule = msg_value.schedule;
+                return st;
             }
             case CourierMsg.LOG: {
                 console.log(
-                    `Курьер: ${state.name} | Скорость: ${state.speed} | Грузоподъемность: ${
-                        state.capacity
-                    } | Находится в ${state.location.coords}${
-                        state.schedule.length > 0 ? ': | Расписание' : ''
-                    }`
+                    `\nКурьер: ${state.name} | Грузоподъемность: ${state.lift} | Находится в ${state.location.x},${state.location.y}`
                 );
-                state.schedule.forEach(p =>
-                    console.log(`Заказ (${p.order_id}) -> Цена: ${p.total.toFixed(2)}`)
+                if (state.schedule.length > 0) {
+                    console.log('\tРасписание:');
+                    state.schedule.forEach(p =>
+                        console.log(
+                            `\t- Заказ (${p.order.id}) -> Цена: ${p.income.toFixed(
+                                2
+                            )}, Цена заказа: ${p.order.price.toFixed(2)}`
+                        )
+                    );
+                    console.log(`Общий заработок за расписание: ${state.total.toFixed(2)}`);
+                }
+                console.log(
+                    '---------------------------------------------------------------------------------------------------------------------------'
                 );
                 break;
             }

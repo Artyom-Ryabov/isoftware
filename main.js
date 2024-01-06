@@ -8,13 +8,21 @@ const { set_location } = require('./src/location');
 
 const company = spawn_company(system, 0);
 COURIERS.forEach((c, i) =>
-    dispatch(company, { name: CompanyMsg.CREATE_COURIER, value: { id: i, init_state: c } })
+    dispatch(company, {
+        name: CompanyMsg.CREATE_COURIER,
+        value: { id: i, init_state: c },
+        sender: company
+    })
 );
 ORDERS.forEach((o, i) =>
-    dispatch(company, { name: CompanyMsg.CREATE_ORDER, value: { id: i, init_state: o } })
+    dispatch(company, {
+        name: CompanyMsg.CREATE_ORDER,
+        value: { id: i, init_state: o },
+        sender: company
+    })
 );
 
-setTimeout(() => dispatch(company, { name: CompanyMsg.LOG, value: null }), 100);
+setTimeout(() => dispatch(company, { name: CompanyMsg.LOG, value: null, sender: company }), 3000);
 
 setTimeout(
     () =>
@@ -26,37 +34,38 @@ setTimeout(
                     name: 'Иван',
                     location: set_location(9, 9),
                     capacity: 5,
-                    speed: 2,
                     cost: COURIER_COST,
-                    schedule: []
+                    total: 0,
+                    schedule: [],
+                    prev_order_ref: null
                 }
-            }
+            },
+            sender: company
         }),
-    150
+    3000
 );
 
-setTimeout(() => dispatch(company, { name: CompanyMsg.LOG, value: null }), 500);
+setTimeout(() => dispatch(company, { name: CompanyMsg.LOG, value: null, sender: company }), 6000);
 
-setTimeout(
-    () => (
-        dispatch(company, {
-            name: CompanyMsg.CREATE_ORDER,
-            value: {
-                id: ORDERS.length,
-                init_state: create_order(set_location(1, 2), set_location(2, 2), 2, 151)
-            }
-        }),
-        dispatch(company, {
-            name: CompanyMsg.CREATE_ORDER,
-            value: {
-                id: ORDERS.length + 1,
-                init_state: create_order(set_location(9, 9), set_location(10, 10), 4, 151)
-            }
-        })
-    ),
-    1000
-);
+setTimeout(() => {
+    dispatch(company, {
+        name: CompanyMsg.CREATE_ORDER,
+        value: {
+            id: ORDERS.length,
+            init_state: create_order(set_location(1, 2), set_location(1, 3), 1, 151)
+        },
+        sender: company
+    });
+    dispatch(company, {
+        name: CompanyMsg.CREATE_ORDER,
+        value: {
+            id: ORDERS.length + 1,
+            init_state: create_order(set_location(9, 9), set_location(10, 10), 1, 151)
+        },
+        sender: company
+    });
+}, 6000);
 
-setTimeout(() => dispatch(company, { name: CompanyMsg.LOG, value: null }), 2000);
+setTimeout(() => dispatch(company, { name: CompanyMsg.LOG, value: null, sender: company }), 9000);
 
-setTimeout(() => stop(system), 5000);
+setTimeout(() => stop(system), 12000);
