@@ -33,7 +33,7 @@ const COURIERS = [
         cost: COURIER_COST,
         total: 0,
         schedule: [],
-        prev_order_ref: null
+        remove_ref: null
     },
     {
         name: 'Test 2',
@@ -43,7 +43,7 @@ const COURIERS = [
         cost: COURIER_COST,
         total: 0,
         schedule: [],
-        prev_order_ref: null
+        remove_ref: null
     }
 ];
 
@@ -55,9 +55,9 @@ function create_order(from, to, weight, len_cost = LEN_COST) {
         price: len_cost * get_distance(from, to),
         weight,
         order_plan: null,
-        order_plans: [],
+        courier_schedules: [],
         num_couriers: 0,
-        lock: false
+        in_process: false
     };
 }
 

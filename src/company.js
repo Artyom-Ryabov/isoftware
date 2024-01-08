@@ -1,5 +1,5 @@
 // @ts-check
-const { spawn, dispatch, Ref } = require('nact');
+const { spawn, dispatch, Ref, stop } = require('nact');
 const { CompanyMsg, CourierMsg, OrderMsg } = require('./msg');
 const spawn_order = require('./order');
 const spawn_courier = require('./courier');
@@ -7,7 +7,6 @@ const { deep_copy } = require('./utlis');
 
 /**
  * @typedef {import('./msg').Msg} Msg
- * @typedef {import('./msg').Courier} Courier
  */
 
 /**
@@ -15,9 +14,16 @@ const { deep_copy } = require('./utlis');
  */
 
 /**
+ * @typedef {Object} Actor
+ * @prop {number} id
+ * @prop {Ref<Msg>} ref
+ * @prop {boolean} active
+ */
+
+/**
  * @typedef {Object} CompanyState
- * @prop {Ref<Msg>[]} couriers
- * @prop {Ref<Msg>[]} orders
+ * @prop {Actor[]} couriers
+ * @prop {Actor[]} orders
  */
 
 /** @type {CompanyState} */
@@ -25,7 +31,7 @@ const INIT_STATE = { orders: [], couriers: [] };
 
 /**
  * @param {Ref<Msg>} parent
- * @param {number} id
+ * @param {string} id
  * @param {CompanyState} init
  * @returns {Ref<Msg>}
  */
@@ -39,60 +45,194 @@ function spawn_company(parent, id, init = INIT_STATE) {
     function receiver(state = init, msg, ctx) {
         switch (msg.name) {
             case CompanyMsg.CREATE_COURIER: {
+                // Добавление нового курьера в систему
+
                 const st = deep_copy(state);
-                st.couriers.push(spawn_courier(ctx.self, msg.value.id, msg.value.init_state));
-                dispatch(ctx.self, { name: CompanyMsg.CREATE_PLAN, value: null, sender: ctx.self });
-                return st;
-            }
-            case CompanyMsg.CREATE_ORDER: {
-                const st = deep_copy(state);
-                const order = spawn_order(ctx.self, msg.value.id, msg.value.init_state);
-                st.orders.push(order);
-                dispatch(order, {
-                    name: OrderMsg.FIND_COURIERS,
-                    value: state.couriers,
+                const courier = {
+                    id: msg.value.id,
+                    ref: spawn_courier(ctx.self, msg.value.id, msg.value.init_state),
+                    active: true
+                };
+                st.couriers.push(courier);
+                dispatch(ctx.self, {
+                    name: CompanyMsg.NOTIFY_ORDERS,
+                    value: null,
                     sender: ctx.self
                 });
                 return st;
             }
+            case CompanyMsg.CREATE_ORDER: {
+                // Добавление нового заказа в систему
+
+                const st = deep_copy(state);
+                const order = {
+                    id: msg.value.id,
+                    ref: spawn_order(ctx.self, msg.value.id, msg.value.init_state),
+                    active: true
+                };
+                st.orders.push(order);
+                dispatch(order.ref, {
+                    name: OrderMsg.FIND_COURIERS,
+                    value: state.couriers.filter(c => c.active).map(c => c.ref),
+                    sender: ctx.self
+                });
+                return st;
+            }
+            case CompanyMsg.NOTIFY_ORDERS: {
+                // Оповестить заказы для распределения по всем курьерам
+
+                state.orders
+                    .filter(o => o.active)
+                    .forEach(o =>
+                        dispatch(o.ref, {
+                            name: OrderMsg.NOTIFY,
+                            value: null,
+                            sender: ctx.self
+                        })
+                    );
+                break;
+            }
             case CompanyMsg.CREATE_PLAN: {
-                state.orders.forEach(o =>
-                    dispatch(o, {
-                        name: OrderMsg.FIND_COURIERS,
-                        value: state.couriers,
-                        sender: ctx.self
-                    })
-                );
+                // Распределить заказ
+
+                dispatch(msg.sender, {
+                    name: OrderMsg.FIND_COURIERS,
+                    value: state.couriers.filter(c => c.active).map(c => c.ref),
+                    sender: ctx.self
+                });
                 break;
             }
             case CompanyMsg.RECEIVE_PLAN: {
-                const msg_value = /** @type {Courier} */ (msg.value);
+                // Вывод сообщения о добавлении заказа в расписание курьера
+
                 console.log(
-                    `Заказ на курьера ${msg_value.name} запланирован с прибылью: ${msg_value.total.toFixed(2)}`
+                    `Заказ - ${msg.value.order}, запланирован на курьера - ${
+                        msg.value.courier
+                    } с прибылью: ${msg.value.income.toFixed(2)}`
                 );
                 break;
             }
             case CompanyMsg.ADJUST_SCHEDULE: {
+                // Если заказ не смог добавиться к какому либо расписанию курьера, то запускается процесс по замене заказ
+
                 dispatch(msg.sender, {
                     name: OrderMsg.FIND_COURIERS_TO_REPLACE,
-                    value: state.couriers,
+                    value: state.couriers.filter(c => c.active).map(c => c.ref),
                     sender: ctx.self
                 });
                 break;
             }
             case CompanyMsg.NOT_PLANNED_ORDER: {
+                // Вывод сообщения о невозможности запланировать заказ
+
                 console.log(`Заказ (${msg.value.id}) не запланирован`);
                 break;
             }
+            case CompanyMsg.ACTIVATE_COURIER: {
+                // Восстановить курьера
+
+                const st = deep_copy(state);
+                const courier = st.couriers.filter(c => !c.active).find(c => c.id === msg.value);
+                if (courier != null) {
+                    courier.active = true;
+                    dispatch(ctx.self, {
+                        name: CompanyMsg.NOTIFY_ORDERS,
+                        value: null,
+                        sender: ctx.self
+                    });
+                    return st;
+                }
+                break;
+            }
+            case CompanyMsg.ACTIVATE_ORDER: {
+                // Восстановить заказ
+
+                const st = deep_copy(state);
+                const order = st.orders.filter(o => !o.active).find(o => o.id === msg.value);
+                if (order != null) {
+                    order.active = true;
+                    dispatch(order.ref, { name: OrderMsg.NOTIFY, value: null, sender: ctx.self });
+                    return st;
+                }
+                break;
+            }
+            case CompanyMsg.DISCARD_COURIER: {
+                // Убрать курьера из списка доступных
+
+                const courier = state.couriers.filter(c => c.active).find(c => c.id === msg.value);
+                if (courier != null) {
+                    dispatch(courier.ref, {
+                        name: OrderMsg.DISCARD,
+                        value: null,
+                        sender: ctx.self
+                    });
+                }
+                break;
+            }
+            case CompanyMsg.DISCARD_ORDER: {
+                // Убрать заказ из списка доступных
+
+                const order = state.orders.filter(o => o.active).find(o => o.id === msg.value);
+                if (order != null) {
+                    dispatch(order.ref, { name: OrderMsg.DISCARD, value: null, sender: ctx.self });
+                }
+                break;
+            }
+            case CompanyMsg.APPLY_DISCARD_COURIER: {
+                // Применить сброс курьера
+
+                const st = deep_copy(state);
+                const courier = st.couriers.find(c => c.id === msg.value);
+                if (courier != null) {
+                    courier.active = false;
+                }
+                return st;
+            }
+            case CompanyMsg.APPLY_DISCARD_ORDER: {
+                // Применить сброс заказа
+
+                const st = deep_copy(state);
+                const order = st.orders.find(o => o.id === msg.value);
+                if (order != null) {
+                    order.active = false;
+                }
+                return st;
+            }
+            case CompanyMsg.DESTROY_COURIER: {
+                // Полностью удалить курьера
+
+                const st = deep_copy(state);
+                const courier = st.couriers.filter(c => !c.active).find(c => c.id === msg.value);
+                if (courier != null) {
+                    st.couriers = st.couriers.filter(c => c.id !== courier.id);
+                    stop(courier.ref);
+                    return st;
+                }
+                break;
+            }
+            case CompanyMsg.DESTROY_ORDER: {
+                // Полностью удалить заказ
+
+                const st = deep_copy(state);
+                const order = st.orders.filter(o => !o.active).find(o => o.id === msg.value);
+                if (order != null) {
+                    st.orders = st.orders.filter(o => o.id !== order.id);
+                    stop(order.ref);
+                    return st;
+                }
+                break;
+            }
             case CompanyMsg.LOG: {
+                // Вывод информации о курьерах и заказах в консоль
+
                 console.log(
                     '\n=================================================== Сформированный план ===================================================\n'
                 );
                 state.couriers.forEach(c =>
-                    dispatch(c, { name: CourierMsg.LOG, value: null, sender: ctx.self })
+                    dispatch(c.ref, { name: CourierMsg.LOG, value: null, sender: ctx.self })
                 );
                 state.orders.forEach(o =>
-                    dispatch(o, { name: CourierMsg.LOG, value: null, sender: ctx.self })
+                    dispatch(o.ref, { name: CourierMsg.LOG, value: null, sender: ctx.self })
                 );
                 break;
             }
@@ -100,7 +240,7 @@ function spawn_company(parent, id, init = INIT_STATE) {
         return state;
     }
 
-    return spawn(parent, receiver, `Delivery-Company-${id}`);
+    return spawn(parent, receiver, id);
 }
 
 module.exports = spawn_company;

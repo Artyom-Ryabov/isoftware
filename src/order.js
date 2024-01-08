@@ -10,8 +10,9 @@ const { deep_copy } = require('./utlis');
 
 /**
  * @typedef {import('./msg').Msg} Msg
- * @typedef {import('./msg').CourierPlan} CourierPlan
+ * @typedef {import('./msg').Plan} Plan
  * @typedef {import('./msg').OrderPlan} OrderPlan
+ * @typedef {import('./msg').CourierSchedule} CourierSchedule
  */
 
 /**
@@ -26,8 +27,8 @@ const { deep_copy } = require('./utlis');
  * @prop {number} price
  * @prop {OrderPlan|null} order_plan
  * @prop {number} num_couriers
- * @prop {OrderPlan[]} order_plans
- * @prop {boolean} lock
+ * @prop {CourierSchedule[]} courier_schedules
+ * @prop {boolean} in_process
  */
 
 /** @type {OrderState} */
@@ -38,17 +39,18 @@ const INIT_STATE = {
     price: 0,
     order_plan: null,
     num_couriers: 0,
-    order_plans: [],
-    lock: false
+    courier_schedules: [],
+    in_process: false
 };
 
 /**
  * @param {Ref<Msg>} parent
- * @param {number} id
+ * @param {string} id
  * @param {OrderState} init
  * @returns {Ref<Msg>}
  */
 function spawn_order(parent, id, init = INIT_STATE) {
+    let locked = false;
     /**
      * @param {OrderState} state
      * @param {Msg} msg
@@ -57,38 +59,29 @@ function spawn_order(parent, id, init = INIT_STATE) {
      */
     function receiver(state = init, msg, ctx) {
         switch (msg.name) {
-            case OrderMsg.RECEIVE_COURIER_PLAN: {
-                const st = deep_copy(state);
-                st.order_plans.push({ courier_ref: msg.sender, courier: msg.value });
-                if (st.order_plans.length === st.num_couriers) {
-                    dispatch(ctx.self, {
-                        name: OrderMsg.PLAN_ORDER,
+            case OrderMsg.NOTIFY: {
+                // Оповещение для не добавленного заказа при появлении нового курьера
+
+                locked = false;
+                if (!state.in_process && state.order_plan == null) {
+                    dispatch(parent, {
+                        name: CompanyMsg.CREATE_PLAN,
                         value: null,
                         sender: ctx.self
                     });
                 }
-                return st;
-            }
-            case OrderMsg.RECEIVE_COURIER_REPLACE_PLAN: {
-                const st = deep_copy(state);
-                st.order_plans.push({ courier_ref: msg.sender, courier: msg.value });
-                if (st.order_plans.length === st.num_couriers) {
-                    dispatch(ctx.self, {
-                        name: OrderMsg.PLAN_REPLACING_ORDER,
-                        value: null,
-                        sender: ctx.self
-                    });
-                }
-                return st;
+                break;
             }
             case OrderMsg.FIND_COURIERS: {
-                if (state.lock || state.order_plan != null) {
+                // Рассылка всем курьерам по добавлению заказа
+
+                if (state.in_process || state.order_plan != null) {
                     break;
                 }
                 const st = deep_copy(state);
                 st.num_couriers = msg.value.length;
-                st.order_plans = [];
-                st.lock = true;
+                st.courier_schedules = [];
+                st.in_process = true;
                 msg.value.forEach(c =>
                     dispatch(c, {
                         name: CourierMsg.CAN_PLAN,
@@ -105,13 +98,15 @@ function spawn_order(parent, id, init = INIT_STATE) {
                 return st;
             }
             case OrderMsg.FIND_COURIERS_TO_REPLACE: {
-                if (state.lock || state.order_plan != null) {
+                // Рассылка всем курьерам по замене заказа
+
+                if (state.in_process || state.order_plan != null) {
                     break;
                 }
                 const st = deep_copy(state);
                 st.num_couriers = msg.value.length;
-                st.order_plans = [];
-                st.lock = true;
+                st.courier_schedules = [];
+                st.in_process = true;
                 msg.value.forEach(c =>
                     dispatch(c, {
                         name: CourierMsg.CAN_REPLACE,
@@ -127,82 +122,166 @@ function spawn_order(parent, id, init = INIT_STATE) {
                 );
                 return st;
             }
-            case OrderMsg.PLAN_ORDER: {
+            case OrderMsg.RECEIVE_COURIER_PLAN: {
+                // Сбор расписаний (по добавлению заказа) со всех курьеров
+
                 const st = deep_copy(state);
-                const order_plans = /** @type {OrderPlan[]} */ (
-                    st.order_plans.filter(p => p.courier != null)
-                );
-                const plan = order_plans.sort((a, b) => a.courier.total - b.courier.total).at(-1);
-                if (plan != null) {
-                    dispatch(plan.courier_ref, {
-                        name: CourierMsg.ACCEPT_PLAN,
-                        value: {
-                            schedule: plan.courier.schedule,
-                            total: plan.courier.total
-                        },
-                        sender: ctx.self
-                    });
-                } else {
-                    dispatch(parent, {
-                        name: CompanyMsg.ADJUST_SCHEDULE,
+                st.courier_schedules.push({ courier_ref: msg.sender, schedule: msg.value });
+                if (st.courier_schedules.length === st.num_couriers) {
+                    dispatch(ctx.self, {
+                        name: OrderMsg.PLAN_ORDER,
                         value: null,
                         sender: ctx.self
                     });
                 }
-                st.order_plan = plan ?? null;
-                st.order_plans = [];
-                st.lock = false;
                 return st;
             }
-            case OrderMsg.PLAN_REPLACING_ORDER: {
+            case OrderMsg.RECEIVE_COURIER_REPLACE_PLAN: {
+                // Сбор расписаний (по замене заказа) со всех курьеров
+
                 const st = deep_copy(state);
-                const order_plans = /** @type {OrderPlan[]} */ (
-                    st.order_plans.filter(p => p.courier != null)
-                );
-                const plan = order_plans.sort((a, b) => a.courier.total - b.courier.total).at(-1);
-                if (plan != null) {
-                    dispatch(plan.courier_ref, {
-                        name: CourierMsg.ACCEPT_REPLACE_PLAN,
-                        value: {
-                            schedule: plan.courier.schedule,
-                            total: plan.courier.total
-                        },
-                        sender: ctx.self
-                    });
-                } else {
-                    dispatch(parent, {
-                        name: CompanyMsg.NOT_PLANNED_ORDER,
-                        value: { id: ctx.name },
+                st.courier_schedules.push({ courier_ref: msg.sender, schedule: msg.value });
+                if (st.courier_schedules.length === st.num_couriers) {
+                    dispatch(ctx.self, {
+                        name: OrderMsg.PLAN_REPLACING_ORDER,
+                        value: null,
                         sender: ctx.self
                     });
                 }
-                st.order_plan = plan ?? null;
-                st.order_plans = [];
-                st.lock = false;
                 return st;
             }
-            // case OrderMsg.UPDATE_PLAN: {
-            //     const _state = deep_copy(state);
-            //     if (_state.plan == null) {
-            //         break;
-            //     }
-            //     _state.plan.total = msg.value;
-            //     return _state;
-            // }
-            case OrderMsg.DISCARD: {
+            case OrderMsg.PLAN_ORDER: {
+                // Выбор лучшего расписания (по добавлению заказа) среди курьеров
+
                 const st = deep_copy(state);
-                dispatch(parent, { name: CompanyMsg.CREATE_PLAN, value: null, sender: ctx.self });
-                st.order_plan = null;
-                st.order_plans = [];
-                st.lock = false;
+                const courier_schedules = /** @type {CourierSchedule[]} */ (
+                    st.courier_schedules.filter(p => p.schedule != null)
+                );
+                const courier_schedule = courier_schedules
+                    .sort((a, b) => a.schedule.total - b.schedule.total)
+                    .at(-1);
+                if (courier_schedule != null) {
+                    dispatch(courier_schedule.courier_ref, {
+                        name: CourierMsg.ACCEPT_PLAN,
+                        value: {
+                            order_id: ctx.name,
+                            plans: courier_schedule.schedule.plans,
+                            total: courier_schedule.schedule.total
+                        },
+                        sender: ctx.self
+                    });
+                    break;
+                }
+                dispatch(parent, {
+                    name: CompanyMsg.ADJUST_SCHEDULE,
+                    value: null,
+                    sender: ctx.self
+                });
+                st.in_process = false;
                 return st;
+            }
+            case OrderMsg.PLAN_REPLACING_ORDER: {
+                // Выбор лучшего расписания (по замене заказа) среди курьеров
+
+                const st = deep_copy(state);
+                const courier_schedules = /** @type {CourierSchedule[]} */ (
+                    st.courier_schedules.filter(p => p.schedule != null)
+                );
+                const courier_schedule = courier_schedules
+                    .sort((a, b) => a.schedule.total - b.schedule.total)
+                    .at(-1);
+                if (courier_schedule != null) {
+                    dispatch(courier_schedule.courier_ref, {
+                        name: CourierMsg.ACCEPT_REPLACE_PLAN,
+                        value: {
+                            order_id: ctx.name,
+                            plans: courier_schedule.schedule.plans,
+                            total: courier_schedule.schedule.total
+                        },
+                        sender: ctx.self
+                    });
+                    break;
+                }
+                dispatch(parent, {
+                    name: CompanyMsg.NOT_PLANNED_ORDER,
+                    value: { id: ctx.name },
+                    sender: ctx.self
+                });
+                st.in_process = false;
+                return st;
+            }
+            case OrderMsg.ACCEPT_PLAN: {
+                // Добавить к заказу план
+
+                const st = deep_copy(state);
+                dispatch(parent, {
+                    name: CompanyMsg.RECEIVE_PLAN,
+                    value: {
+                        order: ctx.name,
+                        courier: msg.value.name,
+                        income: msg.value.plan.income
+                    },
+                    sender: ctx.self
+                });
+                st.order_plan =
+                    { courier: { ref: msg.sender, name: msg.value.name }, plan: msg.value.plan } ??
+                    null;
+                st.courier_schedules = [];
+                st.in_process = false;
+                return st;
+            }
+            case OrderMsg.REMOVE: {
+                // Убрать заказ (при замене заказа, при более выгодном расписании курьера)
+
+                // Временное окно, чтобы заказ мог распределиться
+                if (locked) {
+                    break;
+                }
+                setTimeout(() => (locked = true), 1000);
+                locked = false;
+
+                dispatch(parent, {
+                    name: CompanyMsg.CREATE_PLAN,
+                    value: ctx.name,
+                    sender: ctx.self
+                });
+                const st = deep_copy(state);
+                st.order_plan = null;
+                st.courier_schedules = [];
+                st.in_process = false;
+                return st;
+            }
+            case OrderMsg.DISCARD: {
+                // Сброс заказа
+
+                if (state.order_plan != null) {
+                    dispatch(state.order_plan.courier.ref, {
+                        name: CourierMsg.REMOVE_ORDER,
+                        value: ctx.name,
+                        sender: ctx.self
+                    });
+                    const st = deep_copy(state);
+                    st.order_plan = null;
+                    st.courier_schedules = [];
+                    st.in_process = false;
+                    return st;
+                }
+                dispatch(parent, {
+                    name: CompanyMsg.APPLY_DISCARD_COURIER,
+                    value: ctx.name,
+                    sender: ctx.self
+                });
+                break;
             }
             case OrderMsg.LOG: {
+                // Вывод информации о заказе в консоль
+
                 console.log(
-                    `Заказ (${ctx.name}) ${state.from.x},${state.from.y} -> (${get_distance(
-                        state.from,
-                        state.to
-                    ).toFixed(2)} км / ${state.weight} кг) | Цена: ${state.price.toFixed(2)} | ${
+                    `Заказ - ${ctx.name} | Находится в ${state.from.x},${
+                        state.from.y
+                    } -> (${get_distance(state.from, state.to).toFixed(2)} км / ${
+                        state.weight
+                    } кг) | Цена: ${state.price.toFixed(2)} | ${
                         state.order_plan != null
                             ? `Запланирован на курьера - ${state.order_plan.courier.name}`
                             : 'Не запланирован'
@@ -214,7 +293,7 @@ function spawn_order(parent, id, init = INIT_STATE) {
         return state;
     }
 
-    return spawn(parent, receiver, `order-${id}`);
+    return spawn(parent, receiver, id);
 }
 
 module.exports = spawn_order;

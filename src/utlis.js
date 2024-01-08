@@ -61,7 +61,7 @@ function calc_price(last_location, order, cost) {
 
 /**
  * @param {import('./location').Location} last_location 
- * @param {import('./msg').CourierPlan[]} schedule 
+ * @param {import('./msg').Plan[]} schedule 
  * @param {number} cost 
  * @returns {number}
  */

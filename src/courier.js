@@ -10,10 +10,9 @@ const { deep_copy, find_combinations, calc_price, calc_total } = require('./utli
 
 /**
  * @typedef {import('./msg').Msg} Msg
- * @typedef {import('./msg').MsgOrder} MsgOrder
  * @typedef {import('./msg').Order} Order
- * @typedef {import('./msg').CourierPlan} CourierPlan
- * @typedef {import('./msg').TotalPlan} TotalPlan
+ * @typedef {import('./msg').Plan} Plan
+ * @typedef {import('./msg').Schedule} Schedule
  */
 
 /**
@@ -28,8 +27,8 @@ const { deep_copy, find_combinations, calc_price, calc_total } = require('./utli
  * @prop {number} workload
  * @prop {number} cost
  * @prop {number} total
- * @prop {CourierPlan[]} schedule
- * @prop {Ref<Msg>|null} prev_order_ref
+ * @prop {Plan[]} schedule
+ * @prop {Ref<Msg>|null} remove_ref
  */
 
 /** @type {CourierState} */
@@ -41,7 +40,7 @@ const INIT_STATE = {
     cost: 0,
     total: 0,
     schedule: [],
-    prev_order_ref: null
+    remove_ref: null
 };
 
 /**
@@ -51,11 +50,11 @@ const INIT_STATE = {
  */
 
 /**
- * @param {CourierPlan[]} old_schedule
- * @param {TheoreticalPlan} plan
+ * @param {Plan[]} old_schedule
+ * @param {TheoreticalPlan|null} plan
  * @param {Location} location
  * @param {number} cost
- * @returns {[CourierPlan[]|null, number]}
+ * @returns {[Plan[]|null, number]}
  */
 function calc_schedule(old_schedule, plan, location, cost) {
     /** @type {TheoreticalPlan[]} */
@@ -63,13 +62,15 @@ function calc_schedule(old_schedule, plan, location, cost) {
         order_ref: p.order_ref,
         order: p.order
     }));
-    plans.push(plan);
+    if (plan != null) {
+        plans.push(plan);
+    }
     const variants = find_combinations(plans);
-    /** @type {CourierPlan[]|null} */
+    /** @type {Plan[]|null} */
     let new_schedule = null;
     let highest = 0;
     for (const variant of variants) {
-        /** @type {CourierPlan[]} */
+        /** @type {Plan[]} */
         const schedule = variant.map((v, idx) => ({
             ...v,
             income: calc_price(idx === 0 ? location : variant[idx - 1].order.to, v.order, cost)
@@ -85,7 +86,7 @@ function calc_schedule(old_schedule, plan, location, cost) {
 
 /**
  * @param {Ref<Msg>} parent
- * @param {number} id
+ * @param {string} id
  * @param {CourierState} init
  * @returns {Ref<Msg>}
  */
@@ -99,6 +100,8 @@ function spawn_courier(parent, id, init = INIT_STATE) {
     function receiver(state = init, msg, ctx) {
         switch (msg.name) {
             case CourierMsg.CAN_PLAN: {
+                // Обработка нового заказа на добавление
+
                 const msg_value = /** @type {Order} */ (msg.value);
                 if (msg_value.weight > state.lift || state.workload === state.schedule.length) {
                     dispatch(msg.sender, {
@@ -115,26 +118,22 @@ function spawn_courier(parent, id, init = INIT_STATE) {
                     st.location,
                     st.cost
                 );
-                if (schedule == null) {
-                    dispatch(msg.sender, {
-                        name: OrderMsg.RECEIVE_COURIER_PLAN,
-                        value: null,
-                        sender: ctx.self
-                    });
-                    break;
-                }
                 dispatch(msg.sender, {
                     name: OrderMsg.RECEIVE_COURIER_PLAN,
-                    value: {
-                        name: st.name,
-                        schedule,
-                        total
-                    },
+                    value:
+                        schedule != null
+                            ? {
+                                  plans: schedule,
+                                  total
+                              }
+                            : null,
                     sender: ctx.self
                 });
                 break;
             }
             case CourierMsg.CAN_REPLACE: {
+                // Обработка нового заказа на замену
+
                 const msg_value = /** @type {Order} */ (msg.value);
                 if (msg_value.weight > state.lift) {
                     dispatch(msg.sender, {
@@ -171,63 +170,105 @@ function spawn_courier(parent, id, init = INIT_STATE) {
                 dispatch(msg.sender, {
                     name: OrderMsg.RECEIVE_COURIER_REPLACE_PLAN,
                     value: {
-                        name: st.name,
-                        schedule: best.schedule,
+                        plans: best.schedule,
                         total: best.total
                     },
                     sender: ctx.self
                 });
-                st.prev_order_ref = st.schedule[best.index].order_ref;
+                st.remove_ref = st.schedule[best.index].order_ref;
                 return st;
             }
             case CourierMsg.ACCEPT_PLAN: {
-                const msg_value = /** @type {TotalPlan} */ (msg.value);
+                // Принять новое расписание с добавлением заказа
+
+                const msg_value = /** @type {Schedule} */ (msg.value);
                 const st = deep_copy(state);
-                if (
-                    msg_value.total <= st.total ||
-                    msg_value.schedule.length <= st.schedule.length
-                ) {
+                if (msg_value.total <= st.total || msg_value.plans.length <= st.schedule.length) {
                     dispatch(msg.sender, {
-                        name: OrderMsg.DISCARD,
+                        name: OrderMsg.REMOVE,
                         value: null,
                         sender: ctx.self
                     });
                     break;
                 }
-                dispatch(parent, {
-                    name: CompanyMsg.RECEIVE_PLAN,
-                    value: { name: st.name, schedule: msg_value.schedule, total: msg_value.total },
+                dispatch(msg.sender, {
+                    name: OrderMsg.ACCEPT_PLAN,
+                    value: {
+                        name: st.name,
+                        plan: msg_value.plans.find(p => p.order.id === msg_value.order_id)
+                    },
                     sender: ctx.self
                 });
                 st.total = msg_value.total;
-                st.schedule = msg_value.schedule;
-                st.prev_order_ref = msg.sender;
+                st.schedule = msg_value.plans;
+                st.remove_ref = msg.sender;
                 return st;
             }
             case CourierMsg.ACCEPT_REPLACE_PLAN: {
-                const msg_value = /** @type {TotalPlan} */ (msg.value);
+                // Принять новое расписание с заменой заказа
+
+                const msg_value = /** @type {Schedule} */ (msg.value);
                 const st = deep_copy(state);
                 if (msg_value.total <= st.total) {
                     dispatch(msg.sender, {
-                        name: OrderMsg.DISCARD,
+                        name: OrderMsg.REMOVE,
                         value: null,
                         sender: ctx.self
                     });
                     break;
                 }
-                if (st.prev_order_ref != null) {
-                    dispatch(st.prev_order_ref, {
-                        name: OrderMsg.DISCARD,
+                if (st.remove_ref != null) {
+                    dispatch(st.remove_ref, {
+                        name: OrderMsg.REMOVE,
                         value: null,
                         sender: ctx.self
                     });
-                    st.prev_order_ref = msg.sender;
                 }
+                dispatch(msg.sender, {
+                    name: OrderMsg.ACCEPT_PLAN,
+                    value: {
+                        name: st.name,
+                        plan: msg_value.plans.find(p => p.order.id === msg_value.order_id)
+                    },
+                    sender: ctx.self
+                });
                 st.total = msg_value.total;
-                st.schedule = msg_value.schedule;
+                st.schedule = msg_value.plans;
+                st.remove_ref = msg.sender;
+                return st;
+            }
+            case CourierMsg.REMOVE_ORDER: {
+                // Убрать заказ из расписания
+
+                const st = deep_copy(state);
+                st.schedule = st.schedule.filter(s => s.order.id !== msg.value);
+                const [schedule, total] = calc_schedule(st.schedule, null, st.location, st.cost);
+                if (schedule != null) {
+                    st.schedule = schedule;
+                    st.total = total;
+                }
+                dispatch(msg.sender, { name: OrderMsg.DISCARD, value: null, sender: ctx.self });
+                return st;
+            }
+            case CourierMsg.DISCARD: {
+                // Сброс курьера
+
+                const st = deep_copy(state);
+                dispatch(parent, {
+                    name: CompanyMsg.APPLY_DISCARD_COURIER,
+                    value: ctx.name,
+                    sender: ctx.self
+                });
+                st.schedule.forEach(p =>
+                    dispatch(p.order_ref, { name: OrderMsg.REMOVE, value: null, sender: ctx.self })
+                );
+                st.schedule = [];
+                st.remove_ref = null;
                 return st;
             }
             case CourierMsg.LOG: {
+                // Вывод информации о курьере в консоль
+
                 console.log(
                     `\nКурьер: ${state.name} | Грузоподъемность: ${state.lift} | Находится в ${state.location.x},${state.location.y}`
                 );
@@ -235,7 +276,7 @@ function spawn_courier(parent, id, init = INIT_STATE) {
                     console.log('\tРасписание:');
                     state.schedule.forEach(p =>
                         console.log(
-                            `\t- Заказ (${p.order.id}) -> Цена: ${p.income.toFixed(
+                            `\t- Заказ (${p.order.id}) -> Выгода: ${p.income.toFixed(
                                 2
                             )}, Цена заказа: ${p.order.price.toFixed(2)}`
                         )
@@ -251,7 +292,7 @@ function spawn_courier(parent, id, init = INIT_STATE) {
         return state;
     }
 
-    return spawn(parent, receiver, `courier-${id}`);
+    return spawn(parent, receiver, id);
 }
 
 module.exports = spawn_courier;
