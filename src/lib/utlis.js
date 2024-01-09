@@ -51,7 +51,7 @@ function find_combinations(items) {
 
 /**
  * @param {import('./location').Location} last_location
- * @param {import('./msg').Order} order
+ * @param {import('../actors/msg').Order} order
  * @param {number} cost
  */
 function calc_price(last_location, order, cost) {
@@ -60,9 +60,9 @@ function calc_price(last_location, order, cost) {
 }
 
 /**
- * @param {import('./location').Location} last_location 
- * @param {import('./msg').Plan[]} schedule 
- * @param {number} cost 
+ * @param {import('./location').Location} last_location
+ * @param {import('../actors/msg').Plan[]} schedule
+ * @param {number} cost
  * @returns {number}
  */
 function calc_total(last_location, schedule, cost) {
@@ -74,9 +74,17 @@ function calc_total(last_location, schedule, cost) {
     return total;
 }
 
+/**
+ * @param {number} sec
+ */
+async function wait(sec) {
+    return new Promise(r => setTimeout(() => r(null), sec));
+}
+
 module.exports = {
     deep_copy,
     find_combinations,
     calc_price,
-    calc_total
+    calc_total,
+    wait
 };

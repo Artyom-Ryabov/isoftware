@@ -8,6 +8,7 @@
   },
   "license": "ISC",
   "dependencies": {
+    "@inquirer/prompts": "^3.3.0",
     "nact": "^7.6.2"
   },
   "devDependencies": {

@@ -1,9 +1,10 @@
 // @ts-check
+
 const { spawn, dispatch, Ref, stop } = require('nact');
 const { CompanyMsg, CourierMsg, OrderMsg } = require('./msg');
 const spawn_order = require('./order');
 const spawn_courier = require('./courier');
-const { deep_copy } = require('./utlis');
+const { deep_copy } = require('../lib/utlis');
 
 /**
  * @typedef {import('./msg').Msg} Msg
@@ -140,8 +141,10 @@ function spawn_company(parent, id, init = INIT_STATE) {
                         value: null,
                         sender: ctx.self
                     });
+                    console.log(`Курьер с id = ${msg.value} восстановлен`);
                     return st;
                 }
+                console.log(`Курьер с id = ${msg.value} не найден или не требует восстановления`);
                 break;
             }
             case CompanyMsg.ACTIVATE_ORDER: {
@@ -152,53 +155,61 @@ function spawn_company(parent, id, init = INIT_STATE) {
                 if (order != null) {
                     order.active = true;
                     dispatch(order.ref, { name: OrderMsg.NOTIFY, value: null, sender: ctx.self });
+                    console.log(`Заказ с id = ${msg.value} восстановлен`);
                     return st;
                 }
+                console.log(`Заказ с id = ${msg.value} не найден или не требует восстановления`);
                 break;
             }
-            case CompanyMsg.DISCARD_COURIER: {
+            case CompanyMsg.REMOVE_COURIER: {
                 // Убрать курьера из списка доступных
 
                 const courier = state.couriers.filter(c => c.active).find(c => c.id === msg.value);
                 if (courier != null) {
                     dispatch(courier.ref, {
-                        name: OrderMsg.DISCARD,
+                        name: CourierMsg.REMOVE,
                         value: null,
                         sender: ctx.self
                     });
+                } else {
+                    console.log(`Курьер с id = ${msg.value} не найден`);
                 }
                 break;
             }
-            case CompanyMsg.DISCARD_ORDER: {
+            case CompanyMsg.REMOVE_ORDER: {
                 // Убрать заказ из списка доступных
 
                 const order = state.orders.filter(o => o.active).find(o => o.id === msg.value);
                 if (order != null) {
-                    dispatch(order.ref, { name: OrderMsg.DISCARD, value: null, sender: ctx.self });
+                    dispatch(order.ref, { name: OrderMsg.REMOVE, value: null, sender: ctx.self });
+                } else {
+                    console.log(`Заказ с id = ${msg.value} не найден`);
                 }
                 break;
             }
-            case CompanyMsg.APPLY_DISCARD_COURIER: {
+            case CompanyMsg.APPLY_REMOVE_COURIER: {
                 // Применить сброс курьера
 
                 const st = deep_copy(state);
                 const courier = st.couriers.find(c => c.id === msg.value);
                 if (courier != null) {
                     courier.active = false;
+                    console.log(`Курьер с id = ${msg.value} убран`);
                 }
                 return st;
             }
-            case CompanyMsg.APPLY_DISCARD_ORDER: {
+            case CompanyMsg.APPLY_REMOVE_ORDER: {
                 // Применить сброс заказа
 
                 const st = deep_copy(state);
                 const order = st.orders.find(o => o.id === msg.value);
                 if (order != null) {
                     order.active = false;
+                    console.log(`Заказ с id = ${msg.value} убран`);
                 }
                 return st;
             }
-            case CompanyMsg.DESTROY_COURIER: {
+            case CompanyMsg.DELETE_COURIER: {
                 // Полностью удалить курьера
 
                 const st = deep_copy(state);
@@ -206,11 +217,13 @@ function spawn_company(parent, id, init = INIT_STATE) {
                 if (courier != null) {
                     st.couriers = st.couriers.filter(c => c.id !== courier.id);
                     stop(courier.ref);
+                    console.log(`Курьер с id = ${msg.value} удален`);
                     return st;
                 }
+                console.log(`Курьер с id = ${msg.value} среди убранных курьеров не найден`);
                 break;
             }
-            case CompanyMsg.DESTROY_ORDER: {
+            case CompanyMsg.DELETE_ORDER: {
                 // Полностью удалить заказ
 
                 const st = deep_copy(state);
@@ -218,8 +231,10 @@ function spawn_company(parent, id, init = INIT_STATE) {
                 if (order != null) {
                     st.orders = st.orders.filter(o => o.id !== order.id);
                     stop(order.ref);
+                    console.log(`Заказ с id = ${msg.value} удален`);
                     return st;
                 }
+                console.log(`Заказ с id = ${msg.value} среди убранных заказов не найден`);
                 break;
             }
             case CompanyMsg.LOG: {
@@ -229,10 +244,10 @@ function spawn_company(parent, id, init = INIT_STATE) {
                     '\n=================================================== Сформированный план ===================================================\n'
                 );
                 state.couriers.forEach(c =>
-                    dispatch(c.ref, { name: CourierMsg.LOG, value: null, sender: ctx.self })
+                    dispatch(c.ref, { name: CourierMsg.LOG, value: c.active, sender: ctx.self })
                 );
                 state.orders.forEach(o =>
-                    dispatch(o.ref, { name: CourierMsg.LOG, value: null, sender: ctx.self })
+                    dispatch(o.ref, { name: OrderMsg.LOG, value: o.active, sender: ctx.self })
                 );
                 break;
             }

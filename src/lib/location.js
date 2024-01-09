@@ -1,4 +1,5 @@
 // @ts-check
+
 /**
  * @typedef {Object} Location
  * @prop {number} x

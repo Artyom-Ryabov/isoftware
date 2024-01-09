@@ -1,11 +1,12 @@
 // @ts-check
+
 const { spawn, dispatch, Ref } = require('nact');
-const { set_location } = require('./location');
+const { set_location } = require('../lib/location');
 const { CompanyMsg, CourierMsg, OrderMsg } = require('./msg');
-const { deep_copy, find_combinations, calc_price, calc_total } = require('./utlis');
+const { deep_copy, find_combinations, calc_price, calc_total } = require('../lib/utlis');
 
 /**
- * @typedef {import('./location').Location} Location
+ * @typedef {import('../lib/location').Location} Location
  */
 
 /**
@@ -28,7 +29,7 @@ const { deep_copy, find_combinations, calc_price, calc_total } = require('./utli
  * @prop {number} cost
  * @prop {number} total
  * @prop {Plan[]} schedule
- * @prop {Ref<Msg>|null} remove_ref
+ * @prop {Ref<Msg>|null} discard_ref
  */
 
 /** @type {CourierState} */
@@ -40,7 +41,7 @@ const INIT_STATE = {
     cost: 0,
     total: 0,
     schedule: [],
-    remove_ref: null
+    discard_ref: null
 };
 
 /**
@@ -175,7 +176,7 @@ function spawn_courier(parent, id, init = INIT_STATE) {
                     },
                     sender: ctx.self
                 });
-                st.remove_ref = st.schedule[best.index].order_ref;
+                st.discard_ref = st.schedule[best.index].order_ref;
                 return st;
             }
             case CourierMsg.ACCEPT_PLAN: {
@@ -185,7 +186,7 @@ function spawn_courier(parent, id, init = INIT_STATE) {
                 const st = deep_copy(state);
                 if (msg_value.total <= st.total || msg_value.plans.length <= st.schedule.length) {
                     dispatch(msg.sender, {
-                        name: OrderMsg.REMOVE,
+                        name: OrderMsg.DISCARD,
                         value: null,
                         sender: ctx.self
                     });
@@ -201,7 +202,7 @@ function spawn_courier(parent, id, init = INIT_STATE) {
                 });
                 st.total = msg_value.total;
                 st.schedule = msg_value.plans;
-                st.remove_ref = msg.sender;
+                st.discard_ref = msg.sender;
                 return st;
             }
             case CourierMsg.ACCEPT_REPLACE_PLAN: {
@@ -211,15 +212,15 @@ function spawn_courier(parent, id, init = INIT_STATE) {
                 const st = deep_copy(state);
                 if (msg_value.total <= st.total) {
                     dispatch(msg.sender, {
-                        name: OrderMsg.REMOVE,
+                        name: OrderMsg.DISCARD,
                         value: null,
                         sender: ctx.self
                     });
                     break;
                 }
-                if (st.remove_ref != null) {
-                    dispatch(st.remove_ref, {
-                        name: OrderMsg.REMOVE,
+                if (st.discard_ref != null) {
+                    dispatch(st.discard_ref, {
+                        name: OrderMsg.DISCARD,
                         value: null,
                         sender: ctx.self
                     });
@@ -234,10 +235,10 @@ function spawn_courier(parent, id, init = INIT_STATE) {
                 });
                 st.total = msg_value.total;
                 st.schedule = msg_value.plans;
-                st.remove_ref = msg.sender;
+                st.discard_ref = msg.sender;
                 return st;
             }
-            case CourierMsg.REMOVE_ORDER: {
+            case CourierMsg.DISCARD_ORDER: {
                 // Убрать заказ из расписания
 
                 const st = deep_copy(state);
@@ -247,30 +248,30 @@ function spawn_courier(parent, id, init = INIT_STATE) {
                     st.schedule = schedule;
                     st.total = total;
                 }
-                dispatch(msg.sender, { name: OrderMsg.DISCARD, value: null, sender: ctx.self });
+                dispatch(msg.sender, { name: OrderMsg.REMOVE, value: null, sender: ctx.self });
                 return st;
             }
-            case CourierMsg.DISCARD: {
-                // Сброс курьера
+            case CourierMsg.REMOVE: {
+                // Удалить курьера
 
                 const st = deep_copy(state);
                 dispatch(parent, {
-                    name: CompanyMsg.APPLY_DISCARD_COURIER,
+                    name: CompanyMsg.APPLY_REMOVE_COURIER,
                     value: ctx.name,
                     sender: ctx.self
                 });
                 st.schedule.forEach(p =>
-                    dispatch(p.order_ref, { name: OrderMsg.REMOVE, value: null, sender: ctx.self })
+                    dispatch(p.order_ref, { name: OrderMsg.DISCARD, value: null, sender: ctx.self })
                 );
                 st.schedule = [];
-                st.remove_ref = null;
+                st.discard_ref = null;
                 return st;
             }
             case CourierMsg.LOG: {
                 // Вывод информации о курьере в консоль
 
                 console.log(
-                    `\nКурьер: ${state.name} | Грузоподъемность: ${state.lift} | Находится в ${state.location.x},${state.location.y}`
+                    `\n${msg.value ? '' : '(НЕДОСТУПЕН) '}Курьер: ${state.name} | Грузоподъемность: ${state.lift} | Находится в ${state.location.x},${state.location.y}`
                 );
                 if (state.schedule.length > 0) {
                     console.log('\tРасписание:');

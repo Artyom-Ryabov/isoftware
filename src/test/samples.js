@@ -1,11 +1,12 @@
 // @ts-check
-const { set_location, get_distance } = require('./location');
+
+const { set_location, get_distance } = require('../lib/location');
 
 const LEN_COST = 150;
 const COURIER_COST = LEN_COST * 0.25;
 const COURIER_WORKLOAD = 5;
 
-/** @type {import('./courier').CourierState[]} */
+/** @type {import('../actors/courier').CourierState[]} */
 const COURIERS = [
     // {
     //     name: 'Андрей',
@@ -33,7 +34,7 @@ const COURIERS = [
         cost: COURIER_COST,
         total: 0,
         schedule: [],
-        remove_ref: null
+        discard_ref: null
     },
     {
         name: 'Test 2',
@@ -43,11 +44,11 @@ const COURIERS = [
         cost: COURIER_COST,
         total: 0,
         schedule: [],
-        remove_ref: null
+        discard_ref: null
     }
 ];
 
-/** @returns {import('./order').OrderState} */
+/** @returns {import('../actors/order').OrderState} */
 function create_order(from, to, weight, len_cost = LEN_COST) {
     return {
         from,
@@ -61,7 +62,7 @@ function create_order(from, to, weight, len_cost = LEN_COST) {
     };
 }
 
-/** @type {import('./order').OrderState[]} */
+/** @type {import('../actors/order').OrderState[]} */
 const ORDERS = [
     create_order(set_location(1, 2), set_location(1, 3), 1),
     create_order(set_location(1, 3), set_location(1, 5), 1),

@@ -1,11 +1,12 @@
 // @ts-check
+
 const { spawn, dispatch, Ref } = require('nact');
-const { get_distance, set_location } = require('./location');
+const { get_distance, set_location } = require('../lib/location');
 const { CompanyMsg, CourierMsg, OrderMsg } = require('./msg');
-const { deep_copy } = require('./utlis');
+const { deep_copy } = require('../lib/utlis');
 
 /**
- * @typedef {import('./location').Location} Location
+ * @typedef {import('../lib/location').Location} Location
  */
 
 /**
@@ -75,7 +76,7 @@ function spawn_order(parent, id, init = INIT_STATE) {
             case OrderMsg.FIND_COURIERS: {
                 // Рассылка всем курьерам по добавлению заказа
 
-                if (state.in_process || state.order_plan != null) {
+                if (state.in_process || state.order_plan != null || msg.value.length === 0) {
                     break;
                 }
                 const st = deep_copy(state);
@@ -100,7 +101,7 @@ function spawn_order(parent, id, init = INIT_STATE) {
             case OrderMsg.FIND_COURIERS_TO_REPLACE: {
                 // Рассылка всем курьерам по замене заказа
 
-                if (state.in_process || state.order_plan != null) {
+                if (state.in_process || state.order_plan != null || msg.value.length === 0) {
                     break;
                 }
                 const st = deep_copy(state);
@@ -230,7 +231,7 @@ function spawn_order(parent, id, init = INIT_STATE) {
                 st.in_process = false;
                 return st;
             }
-            case OrderMsg.REMOVE: {
+            case OrderMsg.DISCARD: {
                 // Убрать заказ (при замене заказа, при более выгодном расписании курьера)
 
                 // Временное окно, чтобы заказ мог распределиться
@@ -251,12 +252,12 @@ function spawn_order(parent, id, init = INIT_STATE) {
                 st.in_process = false;
                 return st;
             }
-            case OrderMsg.DISCARD: {
-                // Сброс заказа
+            case OrderMsg.REMOVE: {
+                // Удалить заказ
 
                 if (state.order_plan != null) {
                     dispatch(state.order_plan.courier.ref, {
-                        name: CourierMsg.REMOVE_ORDER,
+                        name: CourierMsg.DISCARD_ORDER,
                         value: ctx.name,
                         sender: ctx.self
                     });
@@ -267,7 +268,7 @@ function spawn_order(parent, id, init = INIT_STATE) {
                     return st;
                 }
                 dispatch(parent, {
-                    name: CompanyMsg.APPLY_DISCARD_COURIER,
+                    name: CompanyMsg.APPLY_REMOVE_ORDER,
                     value: ctx.name,
                     sender: ctx.self
                 });
@@ -277,9 +278,9 @@ function spawn_order(parent, id, init = INIT_STATE) {
                 // Вывод информации о заказе в консоль
 
                 console.log(
-                    `Заказ - ${ctx.name} | Находится в ${state.from.x},${
-                        state.from.y
-                    } -> (${get_distance(state.from, state.to).toFixed(2)} км / ${
+                    `${msg.value ? '' : '(НЕДОСТУПЕН) '}Заказ - ${ctx.name} | Находится в ${
+                        state.from.x
+                    },${state.from.y} -> (${get_distance(state.from, state.to).toFixed(2)} км / ${
                         state.weight
                     } кг) | Цена: ${state.price.toFixed(2)} | ${
                         state.order_plan != null
