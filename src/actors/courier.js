@@ -68,21 +68,21 @@ function calc_schedule(old_schedule, plan, location, cost) {
     }
     const variants = find_combinations(plans);
     /** @type {Plan[]|null} */
-    let new_schedule = null;
+    let schedule = null;
     let highest = 0;
     for (const variant of variants) {
         /** @type {Plan[]} */
-        const schedule = variant.map((v, idx) => ({
+        const sch = variant.map((v, idx) => ({
             ...v,
             income: calc_price(idx === 0 ? location : variant[idx - 1].order.to, v.order, cost)
         }));
-        const total = calc_total(location, schedule, cost);
+        const total = calc_total(location, sch, cost);
         if (total > highest) {
             highest = total;
-            new_schedule = schedule;
+            schedule = sch;
         }
     }
-    return [new_schedule, highest];
+    return [schedule, highest];
 }
 
 /**
@@ -124,9 +124,9 @@ function spawn_courier(parent, id, init = INIT_STATE) {
                     value:
                         schedule != null
                             ? {
-                                  plans: schedule,
-                                  total
-                              }
+                                plans: schedule,
+                                total
+                            }
                             : null,
                     sender: ctx.self
                 });
@@ -242,11 +242,25 @@ function spawn_courier(parent, id, init = INIT_STATE) {
                 // Убрать заказ из расписания
 
                 const st = deep_copy(state);
-                st.schedule = st.schedule.filter(s => s.order.id !== msg.value);
-                const [schedule, total] = calc_schedule(st.schedule, null, st.location, st.cost);
-                if (schedule != null) {
-                    st.schedule = schedule;
-                    st.total = total;
+                const index = st.schedule.findIndex(s => s.order.id === msg.value);
+                const left = st.schedule.slice(0, index);
+                const right = st.schedule.slice(index + 1);
+                const [left_sch, left_total] = calc_schedule(left, null, st.location, st.cost);
+                const [right_sch, right_total] = calc_schedule(right, null, st.location, st.cost);
+                if (right_sch == null) {
+                    right.forEach(o => dispatch(o.order_ref, { name: OrderMsg.DISCARD, value: null, sender: ctx.self }));
+                }
+                if (left_sch == null) {
+                    left.forEach(o => dispatch(o.order_ref, { name: OrderMsg.DISCARD, value: null, sender: ctx.self }));
+                }
+                if (right_total > left_total) {
+                    left.forEach(o => dispatch(o.order_ref, { name: OrderMsg.DISCARD, value: null, sender: ctx.self }));
+                    st.schedule = right_sch ?? [];
+                    st.total = right_total;
+                } else {
+                    right.forEach(o => dispatch(o.order_ref, { name: OrderMsg.DISCARD, value: null, sender: ctx.self }));
+                    st.schedule = left_sch ?? [];
+                    st.total = left_total;
                 }
                 dispatch(msg.sender, { name: OrderMsg.REMOVE, value: null, sender: ctx.self });
                 return st;
